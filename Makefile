@@ -35,7 +35,7 @@ cursor-shape-v1-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
 		$(WAYLAND_PROTOCOLS)/staging/cursor-shape/cursor-shape-v1.xml $@
 
-config.h:
+config.h: config.def.h
 	cp config.def.h $@
 clean:
 	rm -f dwl *.o *-protocol.h
