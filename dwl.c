@@ -305,7 +305,7 @@ static void destroypointerconstraint(struct wl_listener *listener, void *data);
 static void destroysessionlock(struct wl_listener *listener, void *data);
 static void destroykeyboardgroup(struct wl_listener *listener, void *data);
 static Monitor *dirtomon(enum wlr_direction dir);
-static void focusclient(Client *c, int lift);
+static void focusclient(Client *c, LayerSurface *l, int lift);
 static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
 static Client *focustop(Monitor *m);
@@ -644,9 +644,8 @@ arrangelayers(Monitor *m)
 					!l->mapped)
 				continue;
 			/* Deactivate the focused client. */
-			focusclient(NULL, 0);
+			focusclient(NULL, l, 0);
 			exclusive_focus = l;
-			client_notify_enter(l->layer_surface->surface, wlr_seat_get_keyboard(seat));
 			return;
 		}
 	}
@@ -709,10 +708,9 @@ buttonpress(struct wl_listener *listener, void *data)
 		   or a layer surface with on-demand keyboard interactivity */
 		xytonode(cursor->x, cursor->y, NULL, &c, &l, NULL, NULL);
 		if (c && (!client_is_unmanaged(c) || client_wants_focus(c))) {
-			focusclient(c, 1);
+			focusclient(c, NULL, 1);
 		} else if (l && l->layer_surface->current.keyboard_interactive) {
-			focusclient(NULL, 0);
-			client_notify_enter(l->layer_surface->surface, wlr_seat_get_keyboard(seat));
+			focusclient(NULL, l, 0);
 		}
 
 		keyboard = wlr_seat_get_keyboard(seat);
@@ -911,7 +909,7 @@ closemon(Monitor *m)
 		if (c->mon == m)
 			setmon(c, selmon, c->tags);
 	}
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	printstatus();
 }
 
@@ -1368,7 +1366,7 @@ void
 destroydragicon(struct wl_listener *listener, void *data)
 {
 	/* Focus enter isn't sent during drag, so refocus the focused node. */
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 	wl_list_remove(&listener->link);
 	free(listener);
@@ -1407,7 +1405,7 @@ destroylock(SessionLock *lock, int unlock)
 
 	wlr_scene_node_set_enabled(&locked_bg->node, 0);
 
-	focusclient(focustop(selmon), 0);
+	focusclient(focustop(selmon), NULL, 0);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 
 destroy:
@@ -1437,7 +1435,7 @@ destroylocksurface(struct wl_listener *listener, void *data)
 		surface = wl_container_of(cur_lock->surfaces.next, surface, link);
 		client_notify_enter(surface->surface, wlr_seat_get_keyboard(seat));
 	} else if (!locked) {
-		focusclient(focustop(selmon), 1);
+		focusclient(focustop(selmon), NULL, 1);
 	} else {
 		wlr_seat_keyboard_clear_focus(seat);
 	}
@@ -1525,7 +1523,7 @@ dirtomon(enum wlr_direction dir)
 }
 
 void
-focusclient(Client *c, int lift)
+focusclient(Client *c, LayerSurface *l, int lift)
 {
 	struct wlr_surface *old = seat->keyboard_state.focused_surface;
 	int unused_lx, unused_ly, old_client_type;
@@ -1567,7 +1565,7 @@ focusclient(Client *c, int lift)
 	/* If an overlay is focused, don't focus or activate the client,
 	 * but only update its position in fstack to render its border with focuscolor
 	 * and focus it after the overlay is closed. */
-	if (old && (!c || client_surface(c) != old)
+	if (!l && old && (!c || client_surface(c) != old)
 			&& old_client_type == LayerShell && wlr_scene_node_coords(
 				&old_l->scene->node, &unused_lx, &unused_ly)
 			&& old_l->layer_surface->current.layer >= ZWLR_LAYER_SHELL_V1_LAYER_TOP
@@ -1583,6 +1581,13 @@ focusclient(Client *c, int lift)
 		focused_client = NULL;
 	}
 	printstatus();
+
+	if (l) {
+		/* Focus a layer surface and let the input method follow it */
+		input_method_relay_set_focus(input_method_relay, l->layer_surface->surface);
+		client_notify_enter(l->layer_surface->surface, wlr_seat_get_keyboard(seat));
+		return;
+	}
 
 	if (!c) {
 		/* With no client, all we have left is to clear focus */
@@ -1615,7 +1620,7 @@ focusmon(const Arg *arg)
 			selmon = dirtomon(arg->i);
 		while (!selmon->wlr_output->enabled && i++ < nmons);
 	}
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 }
 
 void
@@ -1641,7 +1646,7 @@ focusstack(const Arg *arg)
 		}
 	}
 	/* If only one client is visible on selmon, then c == sel */
-	focusclient(c, 1);
+	focusclient(c, NULL, 1);
 }
 
 /* We probably should change the name of this: it sounds like it
@@ -1866,7 +1871,7 @@ locksession(struct wl_listener *listener, void *data)
 		return;
 	}
 	lock = session_lock->data = ecalloc(1, sizeof(*lock));
-	focusclient(NULL, 0);
+	focusclient(NULL, NULL, 0);
 
 	lock->scene = wlr_scene_tree_create(layers[LyrBlock]);
 	cur_lock = lock->lock = session_lock;
@@ -1916,7 +1921,7 @@ mapnotify(struct wl_listener *listener, void *data)
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrUnmanaged]);
 		wlr_scene_node_set_position(&c->scene->node, c->geom.x, c->geom.y);
 		if (client_wants_focus(c)) {
-			focusclient(c, 1);
+			focusclient(c, NULL, 1);
 			exclusive_focus = c;
 		}
 		goto unset_fullscreen;
@@ -2254,10 +2259,9 @@ pointerfocus(Client *c, LayerSurface *l, struct wlr_surface *surface, double sx,
 
 	if (surface != seat->pointer_state.focused_surface && sloppyfocus && time) {
 		if (c && (!client_is_unmanaged(c) || client_wants_focus(c))) {
-			focusclient(c, 0);
+			focusclient(c, NULL, 0);
 		} else if (l && l->layer_surface->current.keyboard_interactive) {
-			focusclient(NULL, 0);
-			client_notify_enter(l->layer_surface->surface, wlr_seat_get_keyboard(seat));
+			focusclient(NULL, l, 0);
 		}
 	}
 
@@ -2600,7 +2604,7 @@ setmon(Client *c, Monitor *m, uint32_t newtags)
 		setfullscreen(c, c->isfullscreen); /* This will call arrange(c->mon) */
 		setfloating(c, c->isfloating);
 	}
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 }
 
 void
@@ -2892,7 +2896,7 @@ tag(const Arg *arg)
 		return;
 
 	sel->tags = arg->ui & TAGMASK;
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	arrange(selmon);
 	printstatus();
 }
@@ -2965,7 +2969,7 @@ toggletag(const Arg *arg)
 		return;
 
 	sel->tags = newtags;
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	arrange(selmon);
 	printstatus();
 }
@@ -2978,7 +2982,7 @@ toggleview(const Arg *arg)
 		return;
 
 	selmon->tagset[selmon->seltags] = newtagset;
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	arrange(selmon);
 	printstatus();
 }
@@ -3002,7 +3006,7 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 	if (l->layer_surface->output && (l->mon = l->layer_surface->output->data))
 		arrangelayers(l->mon);
 	if (l->layer_surface->surface == seat->keyboard_state.focused_surface)
-		focusclient(focustop(selmon), 1);
+		focusclient(focustop(selmon), NULL, 1);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 }
 
@@ -3021,7 +3025,7 @@ unmapnotify(struct wl_listener *listener, void *data)
 	if (client_is_unmanaged(c)) {
 		if (c == exclusive_focus) {
 			exclusive_focus = NULL;
-			focusclient(focustop(selmon), 1);
+			focusclient(focustop(selmon), NULL, 1);
 		}
 	} else {
 		wl_list_remove(&c->link);
@@ -3140,7 +3144,7 @@ updatemons(struct wl_listener *listener, void *data)
 			if (!c->mon && client_surface(c)->mapped)
 				setmon(c, selmon, c->tags);
 		}
-		focusclient(focustop(selmon), 1);
+		focusclient(focustop(selmon), NULL, 1);
 		if (selmon->lock_surface) {
 			client_notify_enter(selmon->lock_surface->surface,
 					wlr_seat_get_keyboard(seat));
@@ -3199,7 +3203,7 @@ view(const Arg *arg)
 	selmon->seltags ^= 1; /* toggle sel tagset */
 	if (arg->ui & TAGMASK)
 		selmon->tagset[selmon->seltags] = arg->ui & TAGMASK;
-	focusclient(focustop(selmon), 1);
+	focusclient(focustop(selmon), NULL, 1);
 	arrange(selmon);
 	printstatus();
 }
@@ -3290,7 +3294,7 @@ zoom(const Arg *arg)
 	wl_list_remove(&sel->link);
 	wl_list_insert(&clients, &sel->link);
 
-	focusclient(sel, 1);
+	focusclient(sel, NULL, 1);
 	arrange(selmon);
 }
 
