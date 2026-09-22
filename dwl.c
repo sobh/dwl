@@ -378,7 +378,6 @@ static void zoom(const Arg *arg);
 /* variables */
 static pid_t child_pid = -1;
 static int locked;
-static void *exclusive_focus;
 static Client *focused_client;
 static struct wl_display *dpy;
 static struct wl_event_loop *event_loop;
@@ -645,7 +644,6 @@ arrangelayers(Monitor *m)
 				continue;
 			/* Deactivate the focused client. */
 			focusclient(NULL, l, 0);
-			exclusive_focus = l;
 			return;
 		}
 	}
@@ -932,11 +930,6 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 		l->layer_surface->current = old_state;
 		return;
 	}
-
-	if (layer_surface == exclusive_focus
-			&& layer_surface->current.keyboard_interactive !=
-				ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
-		exclusive_focus = NULL;
 
 	if (layer_surface->current.committed == 0 && l->mapped == layer_surface->surface->mapped)
 		return;
@@ -1546,9 +1539,6 @@ focusclient(Client *c, LayerSurface *l, int lift)
 			wlr_xdg_popup_destroy(popup);
 	}
 
-	if (old_c && old_c == exclusive_focus && client_wants_focus(old_c))
-		exclusive_focus = NULL;
-
 	/* Put the new client atop the focus stack and select its monitor */
 	if (c && !client_is_unmanaged(c)) {
 		wl_list_remove(&c->flink);
@@ -1558,7 +1548,9 @@ focusclient(Client *c, LayerSurface *l, int lift)
 
 		/* Don't change border color if there is an exclusive focus or we are
 		 * handling a drag operation */
-		if (!exclusive_focus && !seat->drag)
+		if (!(old_l && old_l->layer_surface->current.keyboard_interactive == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+				&& !(old_c && client_wants_focus(old_c))
+				&& !seat->drag)
 			client_set_border_color(c, focuscolor);
 	}
 
@@ -1920,10 +1912,8 @@ mapnotify(struct wl_listener *listener, void *data)
 		/* Unmanaged clients always are floating */
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrUnmanaged]);
 		wlr_scene_node_set_position(&c->scene->node, c->geom.x, c->geom.y);
-		if (client_wants_focus(c)) {
+		if (client_wants_focus(c))
 			focusclient(c, NULL, 1);
-			exclusive_focus = c;
-		}
 		goto unset_fullscreen;
 	}
 
@@ -3001,8 +2991,6 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 
 	l->mapped = 0;
 	wlr_scene_node_set_enabled(&l->scene->node, 0);
-	if (l == exclusive_focus)
-		exclusive_focus = NULL;
 	if (l->layer_surface->output && (l->mon = l->layer_surface->output->data))
 		arrangelayers(l->mon);
 	if (l->layer_surface->surface == seat->keyboard_state.focused_surface)
@@ -3022,15 +3010,12 @@ unmapnotify(struct wl_listener *listener, void *data)
 	if (c == focused_client)
 		focused_client = NULL;
 
-	if (client_is_unmanaged(c)) {
-		if (c == exclusive_focus) {
-			exclusive_focus = NULL;
-			focusclient(focustop(selmon), NULL, 1);
-		}
-	} else {
+	if (!client_is_unmanaged(c)) {
 		wl_list_remove(&c->link);
 		setmon(c, NULL, 0);
 		wl_list_remove(&c->flink);
+	} else if (client_wants_focus(c)) {
+		focusclient(focustop(selmon), NULL, 1);
 	}
 
 	if (c->foreign_toplevel_handle) {
